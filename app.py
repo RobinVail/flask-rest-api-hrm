@@ -1,68 +1,112 @@
-from flask import Flask, request, jsonify
-from flask_restful import Api, Resource
-from flask_jwt_extended import JWTManager, create_access_token, jwt_required
-import xmltodict
-import mysql.connector
+from flask import Flask, jsonify, make_response, request
+from flask_mysqldb import MySQL
 
 app = Flask(__name__)
-api = Api(app)
+app.config["MYSQL_HOST"] = "localhost"
+app.config["MYSQL_USER"] = "root"
+app.config["MYSQL_PASSWORD"] = "root"
+app.config["MYSQL_DB"] = "hrm"
+app.config["MYSQL_CURSORCLASS"] = "DictCursor"
 
-app.config['JWT_SECRET_KEY'] = 'your_jwt_secret_key'
-jwt = JWTManager(app)
+mysql = MySQL(app)
 
-db = mysql.connector.connect(
-    host="localhost",
-    user="root",
-    password="root",
-    database="hrm"
-)
 
-cursor = db.cursor()
+@app.route("/")
+def hello_world():
+    return "<p>Hello, World!</p>"
 
-class Relative(Resource):
-    def get(self, id):
-        cursor.execute("SELECT * FROM relatives WHERE idrelatives = %s", (id,))
-        relative = cursor.fetchone()
-        if relative:
-            result = {
-                "idrelatives": relative[0],
-                "first_name": relative[1],
-                "middle_name": relative[2],
-                "last_name": relative[3],
-                "name_extension": relative[4],
-                "Occupation": relative[5],
-                "Emp_business": relative[6],
-                "business_address": relative[7],
-                "telephone": relative[8],
-                "birthdate": relative[9]
-            }
-            if 'format' in request.args and request.args['format'] == 'xml':
-                return xmltodict.unparse({"relative": result}), 200, {'Content-Type': 'application/xml'}
-            else:
-                return jsonify(result)
-        else:
-            return {"message": "Relative not found"}, 404
+def data_fetch(query):
+    cur = mysql.connection.cursor()
+    cur.execute(query)
+    data = cur.fetchall()
+    cur.close()
+    return data
 
-    def post(self):
-        data = request.get_json()
-        cursor.execute("INSERT INTO relatives (first_name, middle_name, last_name, name_extension, Occupation, Emp_business, business_address, telephone, birthdate) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)",
-                       (data['first_name'], data['middle_name'], data['last_name'], data['name_extension'], data['Occupation'], data['Emp_business'], data['business_address'], data['telephone'], data['birthdate']))
-        db.commit()
-        return {"message": "Relative added"}, 201
+@app.route("/hrm", methods=["GET"])
+def get_hrm():
+    data = data_fetch("""select * from employees_ext_involvements""")
+    return make_response(jsonify(data), 200)
+@app.route("/hrm/<int:id>", methods=["GET"])
+def get_hrm_by_id(id):
+    data = data_fetch("""select * from employees_ext_involvements where employees_idemployees = {}""".format(id))
+    return make_response(jsonify(data), 200)
 
-    def put(self, id):
-        data = request.get_json()
-        cursor.execute("UPDATE relatives SET first_name = %s, middle_name = %s, last_name = %s, name_extension = %s, Occupation = %s, Emp_business = %s, business_address = %s, telephone = %s, birthdate = %s WHERE idrelatives = %s",
-                       (data['first_name'], data['middle_name'], data['last_name'], data['name_extension'], data['Occupation'], data['Emp_business'], data['business_address'], data['telephone'], data['birthdate'], id))
-        db.commit()
-        return {"message": "Relative updated"}, 200
 
-    def delete(self, id):
-        cursor.execute("DELETE FROM relatives WHERE idrelatives = %s", (id,))
-        db.commit()
-        return {"message": "Relative deleted"}, 200
+@app.route("/hrm/<int:id>/departments", methods=["GET"])
+def get_employee_departments(id):
+    query = """
+        SELECT departments.dept_name, employees_unitassignments.transfer_date
+        FROM employees
+        INNER JOIN employees_unitassignments
+        ON employees.idemployees = employees_unitassignments.employees_idemployees
+        INNER JOIN departments
+        ON employees_unitassignments.departments_iddepartments = departments.iddepartments
+        WHERE employees.idemployees = {}
+        """.format(id)
+    data = data_fetch(query)
+    return make_response(jsonify({"employee_id": id, "count": len(data), "departments": data}), 200)
 
-api.add_resource(Relative, "/relative", "/relative/<int:id>")
 
-if __name__ == '__main__':
+@app.route("/skills", methods=["POST"])
+def add_skill():
+    cur = mysql.connection.cursor()
+    info = request.get_json()
+
+    # Extract data from the JSON request
+    idskills = info.get("idskills")
+    skill_type = info.get("skill_type")
+    skill_description = info.get("skill_description")
+
+    query = """
+    INSERT INTO skills (idskills, skill_type, skill_description)
+    VALUES (%s, %s, %s)
+    """
+    cur.execute(query, (idskills, skill_type, skill_description))
+    mysql.connection.commit()
+    rows_affected = cur.rowcount
+    cur.close()
+
+    return make_response(jsonify({"message": "Skill added successfully", "rows_affected": rows_affected}), 201)
+
+
+@app.route("/skills/<int:idskills>", methods=["PUT"])
+def update_skill(idskills):
+    cur = mysql.connection.cursor()
+    info = request.get_json()
+
+    # Extract data from the JSON request
+    skill_type = info.get("skill_type")
+    skill_description = info.get("skill_description")
+
+    query = """
+    UPDATE skills
+    SET skill_type = %s, skill_description = %s
+    WHERE idskills = %s
+    """
+    cur.execute(query, (skill_type, skill_description, idskills))
+    mysql.connection.commit()
+    rows_affected = cur.rowcount
+    cur.close()
+
+    if rows_affected == 0:
+        return make_response(jsonify({"message": "Skill not found"}), 404)
+
+    return make_response(jsonify({"message": "Skill updated successfully", "rows_affected": rows_affected}), 200)
+
+@app.route("/skills/<int:idskills>", methods=["DELETE"])
+def delete_skill(idskills):
+    cur = mysql.connection.cursor()
+    query = "DELETE FROM skills WHERE idskills = %s"
+    cur.execute(query, (idskills,))
+    mysql.connection.commit()
+    rows_affected = cur.rowcount
+    cur.close()
+
+    if rows_affected == 0:
+        return make_response(jsonify({"message": "Skill not found"}), 404)
+
+    return make_response(jsonify({"message": "Skill deleted successfully", "rows_affected": rows_affected}), 200)
+
+
+if __name__ == "__main__":
     app.run(debug=True)
